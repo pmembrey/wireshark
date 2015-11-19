@@ -3,6 +3,7 @@
  *
  * Copyright 2005 Joerg Mayer (see AUTHORS file)
  * Updates for newer versions by Jason Masker <jason at masker.net>
+ * Updates to support ERSPAN3 by Peter Membrey <peter@membrey.hk>
  *
  * Wireshark - Network traffic analyzer
  * By Gerald Combs <gerald@wireshark.org>
@@ -84,6 +85,15 @@ static int hf_erspan_unknown5 = -1;
 static int hf_erspan_unknown6 = -1;
 static int hf_erspan_unknown7 = -1;
 
+static int hf_erspan_bso = -1;
+static int hf_erspan_sgt = -1;
+static int hf_erspan_p = -1;
+static int hf_erspan_ft = -1;
+static int hf_erspan_hw = -1;
+static int hf_erspan_gra = -1;
+static int hf_erspan_o = -1;
+
+
 static expert_field ei_erspan_version_unknown = EI_INIT;
 
 #define PROTO_SHORT_NAME "ERSPAN"
@@ -112,13 +122,14 @@ static const value_string erspan_version_vals[] = {
 	{0, NULL},
 };
 
-static dissector_handle_t ethnofcs_handle;
+static const value_string erspan_granularity_vals[] = {
+	{0, "100 microseconds"},
+	{1, "100 nanoseconds"},
+	{2, "IEEE 1588"},
+	{3, "Custom granularity"}
+};
 
-static void
-erspan_fmt_timestamp(gchar *result, guint32 timeval)
-{
-	g_snprintf(result, ITEM_LABEL_LENGTH, "%.4f", (((gfloat)timeval)/10000));
-}
+static dissector_handle_t ethnofcs_handle;
 
 static int
 dissect_erspan(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U_)
@@ -141,7 +152,7 @@ dissect_erspan(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _
 	}
 
 	if(pref_fake_erspan) {
-		/* Some vendor don't include ERSPAN Header...*/
+		/* Some vendors don't include ERSPAN Header...*/
 		eth_tvb = tvb_new_subset_remaining(tvb, offset);
 		call_dissector(ethnofcs_handle, eth_tvb, pinfo, tree);
 		return tvb_captured_length(tvb);
@@ -162,14 +173,16 @@ dissect_erspan(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _
 
 		proto_tree_add_item(erspan_tree, hf_erspan_priority, tvb, offset, 2,
 			ENC_BIG_ENDIAN);
-		proto_tree_add_item(erspan_tree, hf_erspan_unknown2, tvb, offset, 2,
-			ENC_BIG_ENDIAN);
+
 		if (version == 1)
 			proto_tree_add_item(erspan_tree, hf_erspan_direction, tvb,
 				offset, 2, ENC_BIG_ENDIAN);
-		else /* version = 2 */
-			proto_tree_add_item(erspan_tree, hf_erspan_unknown3, tvb,
-				offset, 2, ENC_BIG_ENDIAN);
+
+
+		proto_tree_add_item(erspan_tree, hf_erspan_bso, tvb, offset, 2,
+			ENC_BIG_ENDIAN);
+
+
 		proto_tree_add_item(erspan_tree, hf_erspan_truncated, tvb, offset, 2,
 			ENC_BIG_ENDIAN);
 		proto_tree_add_item(erspan_tree, hf_erspan_spanid, tvb, offset, 2,
@@ -181,23 +194,34 @@ dissect_erspan(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _
 				offset, 4, ENC_BIG_ENDIAN);
 			offset += 4;
 
-			proto_tree_add_item(erspan_tree, hf_erspan_unknown4, tvb,
+			proto_tree_add_item(erspan_tree, hf_erspan_sgt, tvb,
 				offset, 2, ENC_NA);
 			offset += 2;
 
+			proto_tree_add_item(erspan_tree, hf_erspan_p, tvb,
+				offset, 2, ENC_NA);
+
+			proto_tree_add_item(erspan_tree, hf_erspan_ft, tvb,
+				offset, 2, ENC_NA);
+
+			proto_tree_add_item(erspan_tree, hf_erspan_hw, tvb,
+				offset, 2, ENC_NA);
+
 			proto_tree_add_item(erspan_tree, hf_erspan_direction2, tvb,
 				offset, 2, ENC_BIG_ENDIAN);
-			proto_tree_add_item(erspan_tree, hf_erspan_unknown5, tvb,
-				offset, 2, ENC_BIG_ENDIAN);
-			offset += 2;
 
-			proto_tree_add_item(erspan_tree, hf_erspan_unknown6, tvb,
-				offset, 4, ENC_NA);
-			offset += 4;
+			proto_tree_add_item(erspan_tree, hf_erspan_gra, tvb,
+				offset, 2, ENC_NA);
+
+			proto_tree_add_item(erspan_tree, hf_erspan_o, tvb,
+				offset, 2, ENC_NA);
+
+
+
+
 		}
-		proto_tree_add_item(erspan_tree, hf_erspan_unknown7, tvb, offset, 4,
-			ENC_NA);
-		offset += 4;
+
+		offset += 2;
 	}
 	else {
 		offset += 8;
@@ -242,6 +266,11 @@ proto_register_erspan(void)
 		{ "Unknown3",	"erspan.unknown3", FT_UINT16, BASE_DEC, NULL,
 			0x0800, NULL, HFILL }},
 
+		{ &hf_erspan_bso,
+		{ "Bad/Short/Oversized",	"erspan.bso", FT_UINT16, BASE_DEC, VALS(erspan_truncated_vals),
+			0x1800, NULL, HFILL }},
+
+
 		{ &hf_erspan_truncated,
 		{ "Truncated",	"erspan.truncated", FT_UINT16, BASE_DEC, VALS(erspan_truncated_vals),
 			0x0400, "ERSPAN packet exceeded the MTU size", HFILL }},
@@ -251,15 +280,43 @@ proto_register_erspan(void)
 			0x03ff, NULL, HFILL }},
 
 		{ &hf_erspan_timestamp,
-		{ "Timestamp",	"erspan.timestamp", FT_UINT32, BASE_CUSTOM, CF_FUNC(erspan_fmt_timestamp),
-			0, NULL, HFILL }},
+		{ "Timestamp",	"erspan.timestamp", FT_UINT32, BASE_DEC, NULL,
+			0xffffffff, NULL, HFILL }},
+
+
+		{ &hf_erspan_sgt,
+		{ "Security Group Tag",	"erspan.sgt", FT_UINT16, BASE_DEC, NULL,
+			0xffff, NULL, HFILL }},
+
+		{ &hf_erspan_p,
+		{ "Has Ethernet PDU",	"erspan.p", FT_UINT16, BASE_DEC, NULL,
+			0x8000, NULL, HFILL }},
+
+
+		{ &hf_erspan_ft,
+		{ "Frame Type",	"erspan.ft", FT_UINT16, BASE_DEC, NULL,
+			0x7C00, NULL, HFILL }},
+
+		{ &hf_erspan_hw,
+		{ "Hardware ID", "erspan.hw", FT_UINT16, BASE_DEC, NULL,
+			0x03f0, NULL, HFILL }},
+
+		{ &hf_erspan_gra,
+		{ "Timestamp granularity", "erspan.gra", FT_UINT16, BASE_DEC, VALS(erspan_granularity_vals),
+			0x0006, NULL, HFILL }},
+
+
+		{ &hf_erspan_o,
+		{ "Optional Sub headers", "erspan.o", FT_UINT16, BASE_DEC, NULL,
+			0x0001, NULL, HFILL }},
+
 
 		{ &hf_erspan_unknown4,
 		{ "Unknown4",	"erspan.unknown4", FT_BYTES, BASE_NONE, NULL,
 			0, NULL, HFILL }},
 
 		{ &hf_erspan_direction2,
-		{ "Direction2",	"erspan.direction2", FT_UINT16, BASE_DEC, VALS(erspan_direction_vals),
+		{ "Direction",	"erspan.direction2", FT_UINT16, BASE_DEC, VALS(erspan_direction_vals),
 			0x0008, NULL, HFILL }},
 
 		{ &hf_erspan_unknown5,
